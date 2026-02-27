@@ -5,7 +5,7 @@ import random
 import io
 from datetime import datetime
 
-# --- 姓名名單來源：根據你提供的員工清單 CSV ---
+# --- 姓名名單 ---
 EMPLOYEE_LIST = [
     "陳育正 / Reed Chen",
     "蕭芮淇 / Charlotte Hsiao",
@@ -23,25 +23,29 @@ def get_random_time(start_h, start_m, end_h, end_m):
     return f"{random_minutes // 60:02d}:{random_minutes % 60:02d}"
 
 def process_excel(file, selected_name, leave_data):
+    # 讀取檔案，明確設定 data_only=False 以保留公式（如果有）
     wb = openpyxl.load_workbook(file)
     
-    # 【核心修正】指定分頁名稱，避免抓錯頁
+    # 優先抓取「海瀧簽到表」，抓不到就抓第一張
     try:
         ws = wb["海瀧簽到表"]
     except KeyError:
-        # 如果萬一分頁名稱不對，就抓第一張分頁
         ws = wb.worksheets[0]
-        st.warning(f"找不到名為『海瀧簽到表』的分頁，程式改為處理：{ws.title}")
     
-    # 1. 在 B2 填入選定的姓名
-    ws["B2"] = f"姓名：  {selected_name}"
-    
-    # 2. 處理出勤明細 (從第 4 列到第 34 列)
+    # 【關鍵修正】改用 .cell() 寫法，避開 B2 的 AttributeError
+    # row=2, column=2 等於 B2
+    try:
+        ws.cell(row=2, column=2).value = f"姓名：  {selected_name}"
+    except Exception as e:
+        st.error(f"寫入姓名時發生錯誤：{e}")
+
+    # 處理出勤明細 (Row 4 到 34)
     for row in range(4, 35):
-        desc_cell = ws.cell(row=row, column=4) # D 欄：說明
+        desc_cell = ws.cell(row=row, column=4) # D 欄
         desc_val = str(desc_cell.value).strip() if desc_cell.value else ""
         
-        date_cell = ws.cell(row=row, column=2) # B 欄：日期
+        # 讀取日期 B 欄
+        date_cell = ws.cell(row=row, column=2)
         if not date_cell.value:
             continue
             
@@ -53,9 +57,9 @@ def process_excel(file, selected_name, leave_data):
         except:
             date_str = ""
 
-        # --- 邏輯 A：國定假日或周末假日 畫斜線 ---
+        # --- 邏輯 A：只要是假日，E, F, G, H, I 全部畫斜線 ---
         if "假日" in desc_val:
-            for col in range(5, 10): # E, F, G, H, I 欄全部填斜線
+            for col in range(5, 10): # E=5, F=6, G=7, H=8, I=9
                 ws.cell(row=row, column=col).value = "/"
             continue
 
@@ -83,23 +87,20 @@ def process_excel(file, selected_name, leave_data):
     wb.save(output)
     return output.getvalue()
 
-# --- Streamlit UI介面 ---
+# --- 下方介面保持不變 ---
 st.set_page_config(page_title="海瀧出勤工具", layout="centered")
 st.title("🚢 海瀧出勤紀錄自動填表")
-
 name_choice = st.selectbox("1. 請選擇填表人姓名", EMPLOYEE_LIST)
-
 uploaded_file = st.file_uploader("2. 上傳空白 Excel 範本", type=["xlsx"])
 
 if uploaded_file:
     if 'leaves' not in st.session_state: st.session_state.leaves = {}
     st.subheader("3. 設定休假日期 (非必填)")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    with col1: d_in = st.text_input("日期 (MM/DD)", placeholder="02/09")
-    with col2: t_in = st.selectbox("假別", ["特休", "事假", "病假", "公假"])
-    with col3: s_in = st.text_input("開始", "09:00")
-    with col4: e_in = st.text_input("結束", "12:00")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: d_in = st.text_input("日期 (MM/DD)", placeholder="02/09")
+    with c2: t_in = st.selectbox("假別", ["特休", "事假", "病假", "公假"])
+    with c3: s_in = st.text_input("開始", "09:00")
+    with c4: e_in = st.text_input("結束", "12:00")
     
     if st.button("➕ 新增休假"):
         if d_in:
@@ -108,15 +109,18 @@ if uploaded_file:
 
     if st.session_state.leaves:
         st.write("已設定休假：", st.session_state.leaves)
-        if st.button("🗑️ 清空休假設定"):
+        if st.button("🗑️ 清空休假"):
             st.session_state.leaves = {}
             st.rerun()
 
     if st.button("🚀 生成並下載 Excel"):
-        final_xlsx = process_excel(uploaded_file, name_choice, st.session_state.leaves)
-        st.download_button(
-            label="💾 點我下載成品",
-            data=final_xlsx,
-            file_name=f"{name_choice.split(' / ')[0]}_出勤紀錄表.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        try:
+            final_xlsx = process_excel(uploaded_file, name_choice, st.session_state.leaves)
+            st.download_button(
+                label="💾 點我下載成品",
+                data=final_xlsx,
+                file_name=f"{name_choice.split(' / ')[0]}_出勤表.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        except Exception as global_e:
+            st.error(f"發生程式錯誤：{global_e}")
