@@ -95,4 +95,28 @@ if uploaded_file:
     if 'leaves' not in st.session_state: st.session_state.leaves = {}
     st.subheader("3. 設定休假日期 (非必填)")
     
-    col1, col2, col3, col4 = st.
+    col1, col2, col3, col4 = st.columns(4)
+    with col1: d_in = st.text_input("日期 (MM/DD)", placeholder="02/09")
+    with col2: t_in = st.selectbox("假別", ["特休", "事假", "病假", "公假"])
+    with col3: s_in = st.text_input("開始", "09:00")
+    with col4: e_in = st.text_input("結束", "12:00")
+    
+    if st.button("➕ 新增休假"):
+        if d_in:
+            st.session_state.leaves[d_in] = {"type": t_in, "start": s_in, "end": e_in}
+            st.rerun()
+
+    if st.session_state.leaves:
+        st.write("已設定休假：", st.session_state.leaves)
+        if st.button("🗑️ 清空休假設定"):
+            st.session_state.leaves = {}
+            st.rerun()
+
+    if st.button("🚀 生成並下載 Excel"):
+        final_xlsx = process_excel(uploaded_file, name_choice, st.session_state.leaves)
+        st.download_button(
+            label="💾 點我下載成品",
+            data=final_xlsx,
+            file_name=f"{name_choice.split(' / ')[0]}_出勤紀錄表.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
