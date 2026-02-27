@@ -12,13 +12,12 @@ EMPLOYEE_LIST = [
 ]
 
 def get_random_time(sh, sm, eh, em):
-    total_s = sh * 60 + sm
-    total_e = eh * 60 + em
+    total_s, total_e = sh * 60 + sm, eh * 60 + em
     rnd = random.randint(total_s, total_e)
     return f"{rnd // 60:02d}:{rnd % 60:02d}"
 
-# --- 萬能安全寫入函數 (解決合併儲存格問題) ---
 def safe_write(ws, r, c, value):
+    """解決合併儲存格寫入問題"""
     cell = ws.cell(row=r, column=c)
     if isinstance(cell, MergedCell):
         for merged_range in ws.merged_cells.ranges:
@@ -30,62 +29,70 @@ def safe_write(ws, r, c, value):
 
 def process_excel(file, selected_name, leave_data):
     wb = openpyxl.load_workbook(file)
-    # 優先抓取分頁
     ws = wb["海瀧簽到表"] if "海瀧簽到表" in wb.sheetnames else wb.worksheets[0]
     
-    # 1. 寫入姓名
-    safe_write(ws, 2, 2, f"姓名：  {selected_name}")
+    # 1. 寫入姓名 (B3)
+    safe_write(ws, 3, 2, f"姓名：  {selected_name}")
     
-    # 2. 處理 1號到 31號 (Row 4 ~ 34)
-    for row in range(4, 35):
-        desc_cell = ws.cell(row=row, column=4)
-        desc_val = str(desc_cell.value).strip() if desc_cell.value else ""
+    # 2. 自動尋找標題列，判定資料從哪開始
+    start_row = 4
+    for r in range(1, 10):
+        if "序號" in str(ws.cell(row=r, column=1).value):
+            start_row = r + 1
+            break
+
+    # 3. 處理出勤明細
+    for row in range(start_row, start_row + 31):
+        desc_cell = ws.cell(row=row, column=4) # D 欄
+        if desc_cell.value is None: continue
         
-        date_cell = ws.cell(row=row, column=2)
-        if not date_cell.value: continue
+        desc_val = str(desc_cell.value).strip()
+        date_cell = ws.cell(row=row, column=2) # B 欄
         
+        # 彈性解析日期
         try:
-            if isinstance(date_cell.value, datetime):
-                date_str = date_cell.value.strftime("%m/%d")
-            else:
-                date_str = str(date_cell.value)[5:10].replace("-", "/")
+            d_val = date_cell.value
+            if isinstance(d_val, datetime):
+                date_str = d_val.strftime("%m/%d")
+            elif "/" in str(d_val): # 格式如 02/01
+                date_str = str(d_val).strip()
+            else: # 格式如 2026-02-01
+                date_str = str(d_val)[5:10].replace("-", "/")
         except:
             date_str = ""
 
-        # A. 假日畫斜線
+        # A. 假日畫斜線 (包含週末、國定假日)
         if "假日" in desc_val:
-            for col in range(5, 10):
+            for col in range(5, 10): # E 到 I
                 safe_write(ws, row, col, "/")
             continue
 
-        # B. 工作日填時間
+        # B. 工作日填時間 (關鍵修正：改用模糊比對)
         if "工作" in desc_val:
             on_t = get_random_time(8, 50, 9, 5)
             off_t = get_random_time(18, 0, 18, 10)
             remark = ""
 
+            # 請假邏輯
             if date_str in leave_data:
                 l = leave_data[date_str]
                 remark = f"{l['type']} {l['start']}-{l['end']}"
-                # 請假邏輯判斷
                 if l['end'] == "12:00":
                     on_t = "13:30"
                 elif l['start'] >= "13:30":
                     off_t = l['start']
-                
-                # 全天請假判斷 (這是剛才斷掉的地方)
                 if l['start'] <= "09:00" and l['end'] >= "18:00":
                     on_t, off_t = "請假", "請假"
 
-            safe_write(ws, row, 5, on_t)
-            safe_write(ws, row, 7, off_t)
-            safe_write(ws, row, 9, remark)
+            safe_write(ws, row, 5, on_t) # E
+            safe_write(ws, row, 7, off_t) # G
+            safe_write(ws, row, 9, remark) # I
 
-    out = io.BytesIO()
-    wb.save(out)
-    return out.getvalue()
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
 
-# --- 網頁介面 ---
+# --- 介面代碼 ---
 st.set_page_config(page_title="海瀧出勤工具", layout="centered")
 st.title("🚢 海瀧出勤紀錄自動填表")
 name_choice = st.selectbox("1. 選擇姓名", EMPLOYEE_LIST)
@@ -100,20 +107,20 @@ if uploaded_file:
     with c3: s_in = st.text_input("開始", "09:00")
     with c4: e_in = st.text_input("結束", "12:00")
     
-    if st.button("➕ 新增"):
+    if st.button("➕ 新增休假"):
         if d_in:
             st.session_state.leaves[d_in] = {"type": t_in, "start": s_in, "end": e_in}
             st.rerun()
 
     if st.session_state.leaves:
-        st.write("目前設定：", st.session_state.leaves)
-        if st.button("🗑️ 清空"):
+        st.write("已設定休假：", st.session_state.leaves)
+        if st.button("🗑️ 清空所有設定"):
             st.session_state.leaves = {}
             st.rerun()
 
-    if st.button("🚀 生成下載"):
+    if st.button("🚀 生成並下載"):
         try:
             final_xlsx = process_excel(uploaded_file, name_choice, st.session_state.leaves)
-            st.download_button("💾 點我下載成品", final_xlsx, f"{name_choice.split(' / ')[0]}_出勤表.xlsx")
+            st.download_button("💾 下載成果 Excel", final_xlsx, f"{name_choice.split(' / ')[0]}_出勤表.xlsx")
         except Exception as e:
-            st.error(f"錯誤：{e}")
+            st.error(f"偵測到異常，請聯繫開發者：{e}")
