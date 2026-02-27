@@ -4,6 +4,7 @@ import random
 import io
 from datetime import datetime
 from openpyxl.cell.cell import MergedCell
+from openpyxl.styles import Alignment # 匯入置中對齊工具
 
 # --- 同事名單 ---
 EMPLOYEE_LIST = [
@@ -16,18 +17,24 @@ def get_random_time(sh, sm, eh, em):
     rnd = random.randint(total_s, total_e)
     return f"{rnd // 60:02d}:{rnd % 60:02d}"
 
-def safe_write(ws, r, c, value):
+# 加入 center 參數來控制是否置中
+def safe_write(ws, r, c, value, center=False):
     cell = ws.cell(row=r, column=c)
+    target_cell = cell
+    
     if isinstance(cell, MergedCell):
         for merged_range in ws.merged_cells.ranges:
             if cell.coordinate in merged_range:
-                ws.cell(row=merged_range.min_row, column=merged_range.min_col).value = value
-                return
-    else:
-        cell.value = value
+                target_cell = ws.cell(row=merged_range.min_row, column=merged_range.min_col)
+                break
+                
+    target_cell.value = value
+    
+    # 如果指定要置中，就套用置中格式
+    if center:
+        target_cell.alignment = Alignment(horizontal='center', vertical='center')
 
 def process_excel(file):
-    # 讀取兩次：一次看公式結果，一次用來寫入
     wb_read = openpyxl.load_workbook(file, data_only=True)
     wb_write = openpyxl.load_workbook(file)
     
@@ -35,7 +42,7 @@ def process_excel(file):
     ws_read = wb_read[sheet_name]
     ws_write = wb_write[sheet_name]
     
-    # 1. 寫入姓名 (B3)
+    # 1. 寫入姓名
     safe_write(ws_write, 3, 2, f"姓名：  {st.session_state.selected_name}")
     
     # 2. 自動尋找資料起始列
@@ -47,44 +54,48 @@ def process_excel(file):
 
     # 3. 處理出勤明細
     for row in range(start_row, start_row + 31):
-        desc_cell = ws_read.cell(row=row, column=4)
-        if desc_cell.value is None: continue
+        date_val = ws_read.cell(row=row, column=2).value
+        desc_val = ws_read.cell(row=row, column=4).value
         
-        desc_val = str(desc_cell.value).strip()
-        
-        # 【關鍵修正 1】過濾掉公式產生的 0 或空白字元
-        if desc_val in ["", "0", "0.0", "None"]:
-            continue
+        # --- 徹底消滅 0 ---
+        is_empty_day = False
+        if date_val is None or desc_val is None:
+            is_empty_day = True
+        elif isinstance(date_val, datetime) and date_val.year < 1905:
+            is_empty_day = True
+        elif str(date_val).strip() in ["", "0", "0.0", "None"] or str(desc_val).strip() in ["", "0", "0.0", "None"]:
+            is_empty_day = True
             
-        date_cell = ws_read.cell(row=row, column=2)
-        d_val = date_cell.value
-        
-        # 同樣過濾掉日期的 0
-        if d_val is None or str(d_val).strip() in ["", "0", "0.0", "None"]:
+        if is_empty_day:
+            for col in range(1, 10):
+                safe_write(ws_write, row, col, "")
             continue
-            
+
+        desc_str = str(desc_val).strip()
+        
         try:
-            if isinstance(d_val, datetime):
-                date_str = d_val.strftime("%m/%d")
-            elif "/" in str(d_val):
-                date_str = str(d_val).strip()
+            if isinstance(date_val, datetime):
+                date_str = date_val.strftime("%m/%d")
+            elif "/" in str(date_val):
+                date_str = str(date_val).strip()
             else:
-                date_str = str(d_val)[5:10].replace("-", "/")
+                date_str = str(date_val)[5:10].replace("-", "/")
         except:
             date_str = ""
 
-        # 【關鍵修正 2】假日畫橫線改為 "--"
-        if "假日" in desc_val:
-            for col in range(5, 10):
-                safe_write(ws_write, row, col, "--")
+        # --- 【關鍵修正】假日畫 "--" 並設定置中 (center=True) ---
+        if "假日" in desc_str:
+            for col in range(5, 10): # E, F, G, H, I 全部填 --
+                safe_write(ws_write, row, col, "--", center=True)
             continue
 
-        # B. 工作日填時間
-        if "工作" in desc_val:
+        # --- 工作日填時間 ---
+        if "工作" in desc_str:
             on_t = get_random_time(8, 50, 9, 5)
             off_t = get_random_time(18, 0, 18, 10)
             remark = ""
 
+            # 處理請假
             if date_str in st.session_state.leaves:
                 l = st.session_state.leaves[date_str]
                 remark = f"{l['type']} {l['start']}-{l['end']}"
@@ -95,8 +106,11 @@ def process_excel(file):
                 if l['start'] <= "09:00" and l['end'] >= "18:00":
                     on_t, off_t = "請假", "請假"
 
+            # 寫入時間 (維持原本排版，不強制置中)
             safe_write(ws_write, row, 5, on_t)
+            safe_write(ws_write, row, 6, "")
             safe_write(ws_write, row, 7, off_t)
+            safe_write(ws_write, row, 8, "")
             safe_write(ws_write, row, 9, remark)
 
     output = io.BytesIO()
@@ -108,7 +122,6 @@ st.set_page_config(page_title="海瀧出勤工具", layout="centered")
 st.title("🚢 海瀧出勤紀錄自動填表")
 
 st.session_state.selected_name = st.selectbox("1. 選擇姓名", EMPLOYEE_LIST)
-
 uploaded_file = st.file_uploader("2. 上傳 Excel 範本", type=["xlsx"])
 
 if uploaded_file:
